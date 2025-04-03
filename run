@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+
+# NOTES:
+# - "--bind-to none" on `mpirun` and "--cpu-bind=none" on `srun` ensure that threads don't bind to a specific core
+
+# TODO:
+# - add -o, --output to specify output folder and keep the default to be 'simulations'
+# - add -c, --continue to copy the parfile of the last run of a given simulation and append to it based on the last checkpoint
+# - see how to submit several jobs in a dependency queue and add this functionality to this script
+
+# ensure that the exit signals will propagate through pipes
+set -o pipefail
+
+# function to display usage information
+usage() {
+  echo "A CLI to automate and simplify the execution of Cactus binaries"
+  echo ""
+  echo "Usage:"
+  echo "  $0 -e <executable> -p <parfile> [-o] [-O] [-a] [-s] [-S] [-t <1,2,..,all>] [-p <1,2,..,all>] [-h] -- <args for Slurm>"
+  echo ""
+  echo "Available flags:"
+  echo "  -e, --exe        <path>           Executable file (required)"
+  echo "  -p, --par        <path>           Parameter file (required)"
+  echo "  -o, --output                      Output folder (default: './simulations')"
+  echo "  -O, --overwrite                   Overwrite if output folder already exists"
+  echo "  -a, --append                      Append to already existing output, in its own folder"
+  echo "  -s, --sbatch                      Run using Slurm via sbatch"
+  echo "  -t, --threads    <1,2,..,[all]>   The Nº of threads (localhost only)"
+  echo "  -P, --processes  <[1],2,..,all>   The Nº of processes (localhost only)"
+  echo "  -m, --move                        Move the parfile instead of copying it to the output directory"
+  echo "  -h, --help                        Prints this help dialog"
+  echo "  --                                Everything after this separator will be dispatched verbatim to sbatch"
+  echo ""
+  echo "Environmental variables:"
+  echo "  \$CACTUS_SOURCE  If exists, it will be sourced before running the binary"
+}
+
+# define CLI variables
+exe=""
+par=""
+output="simulations"
+overwrite=false
+append=false
+sbatch=false
+threads="all"
+processes=1
+move=false
+
+# parse command-line options
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -e|--exe)
+      exe=$(realpath $2)
+      shift 2
+      ;;
+    -p|--par)
+      par=$(realpath $2)
+      shift 2
+      ;;
+    -o|--output)
+      output=$(realpath $2)
+      shift 2
+      ;;
+    -O|--overwrite)
+      overwrite=true
+      shift 1
+      ;;
+    -a|--append)
+      append=true
+      shift 1
+      ;;
+    -s|--sbatch)
+      sbatch=true
+      shift 1
+      ;;
+    -t|--threads)
+      threads=$2
+      shift 2
+      ;;
+    -P|--processes)
+      processes=$2
+      shift 2
+      ;;
+    -m|--move)
+      move=true
+      shift 1
+      ;;
+    --)
+      shift 1
+      break
+      ;;
+    *)
+      echo "Unknown option: "$1", use -h, --help for more information"
+      exit 1
+      ;;
+  esac
+done
+
+# remaining arguments to be passed verbatim to sbatch
+flags="$@"
+
+# exit if there is some error in parsing the arguments
+if [ $? -ne 0 ]; then
+  echo "An unknown error took place while parsing the arguments"
+  exit 1
+fi
+
+# the executable must always be provided
+if [[ -z $exe ]]; then
+  echo "Error on parsing arguments: executable file (-e, --exe) is required"
+  exit 1
+fi
+
+if [ ! -e $exe ]; then
+  echo "Error on parsing arguments: no executable file found at $exe"
+  exit 1
+fi
+
+# the parfile must always be provided
+if [[ -z $par ]]; then
+  echo "Error on parsing arguments: parameter file (-p, --par) is required"
+  exit 1
+fi
+
+if [ ! -e $par ]; then
+  echo "Error on parsing arguments: no parfile found at $par"
+  exit 1
+fi
+
+# threads and processes must be integers or "all"
+if [[ "$threads" != "all" && ! "$threads" =~ ^-?[0-9]+$ ]]; then
+  echo "Error on parsing arguments: -t, --threads is not an integer or 'all'"
+  exit 1
+fi
+
+if [[ "$processes" != "all" && ! "$processes" =~ ^-?[0-9]+$ ]]; then
+  echo "Error on parsing arguments: -p, --processes is not an integer or 'all'"
+  exit 1
+fi
+
+# overwrite and append cannot be provided simultaneously
+if [ "$overwrite" == true ] && [ "$append" == true ]; then
+  echo "Error on parsing arguments: -o, --overwrite and -a, --append cannot be provided simultaneously"
+  exit 1
+fi
+
+# if $threads is set to "all", find how many threads we available on this system using `nproc`
+# do the same for the number of processes
+if [[ "$threads" == "all" ]]; then
+  threads=$(nproc)
+fi
+
+if [[ "$processes" == "all" ]]; then
+  processes=$(nproc)
+fi
+
+# fetch run name from parfile
+# this should be present in 'IO::out_dir' and will be assigned to `$name`
+name=$(grep 'IO::out_dir' $par | sed 's/.*= "\(.*\)".*/\1/')
+
+if [[ "$name" == *"$"* ]]; then
+  echo "'$' found in 'IO::out_dir', this is probably a variable and I don't know its value, I'm bailing out!"
+  exit 1
+fi
+
+# the run directory (that includes the simulation output and checkpoints) is "simulations/$name"
+rundir="$output/$name"
+
+# if the run directory exists and neither -o, --overwrite or -a, --append is set, refuse to proceed
+if [ -e "$rundir" ] && [ $overwrite == false ] && [ $append == false ]; then
+  echo "Run directory '$rundir' already exists and neither -O, --overwrite nor -a, --append have been provided"
+  exit 1
+fi
+
+# if run directory exists and `overwrite` is toggled, remove everything
+if [ $overwrite == true ] && [ -e "$rundir" ]; then
+  rm -rf "$rundir"
+fi
+
+# ensure run directory exists and cd into it
+mkdir -p "$rundir"
+mkdir -p "$rundir/checkpoints"
+cd "$rundir"
+
+# at this point we know the run directory exists and is empty, or exists but `append` is toggled
+# we need to create the output for the N-th run
+# (!) poor choice of variable name, there already was an output before!
+for i in {0000..9999}; do
+  output="output-$i"
+  if [ ! -d "$output" ]; then
+    mkdir "$output"
+    break
+  fi
+done
+
+# cd into the output folder because we're running the parfile from inside the output directory
+# this is to avoid dangling parfiles in `$rundir`
+cd "$output"
+
+# copy or move the parfile to `$output`, which is where we are
+if [ $move == true ]; then
+  mv "$par" .
+else
+  cp "$par" .
+fi
+
+# change 'IO::out_dir' to `.`, and assume 'IO::checkpoint_dir' and 'IO::recover_dir' are set to '../checkpoints' already
+sed -i "s|^IO::out_dir.*|IO::out_dir = \".\"|" $(basename "$par")
+
+# if we're using sbatch
+if [ "$sbatch" == true ]; then
+  sbatch --job-name="$name" -o "out.log" $flags <<EOF
+#!/usr/bin/env bash
+
+# check whether there's something to source on the remote machine before we proceed
+if [ -n "\${CACTUS_SOURCE}" ] && [ -f \$CACTUS_SOURCE ]; then
+  source \$CACTUS_SOURCE
+
+  # exit if the sourcing is unsuccessful
+  if [ $? -ne 0 ]; then
+    echo "An unknown error occured while sourcing \$CACTUS_SOURCE"
+    exit 1
+  fi
+fi
+
+export CACTUS_STARTTIME=\$(date +%s)
+export CACTUS_NUM_PROCS=\$SLURM_NTASKS
+export OMP_NUM_THREADS=\$SLURM_CPUS_PER_TASK
+
+srun --cpu-bind=none -- "$exe" $(basename "$par")
+EOF
+
+# otherwise, we're using localhost
+else
+  # check whether there's something to source on the localhost before we proceed
+  if [ -n "${CACTUS_SOURCE}" ] && [ -f $CACTUS_SOURCE ]; then
+    source $CACTUS_SOURCE
+
+    # exit if the sourcing is unsuccessful
+    if [ $? -ne 0 ]; then
+      echo "An unknown error occured while sourcing $CACTUS_SOURCE"
+      exit 1
+    fi
+  fi
+
+  export CACTUS_STARTTIME=$(date +%s)
+  export CACTUS_NUM_PROCS=$processes
+  export OMP_NUM_THREADS=$threads
+
+  mpirun -np $processes --bind-to none -- "$exe" $(basename "$par") |& tee "out.log"
+fi
+
+# exit if something was wrong
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+# otherwise, we made it!
+exit 0

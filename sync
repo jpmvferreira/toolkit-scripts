@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+
+# function to display usage information
+usage() {
+  echo "An rsync wrapper to manage Einstein Toolkit simulations"
+  echo ""
+  echo "Usage"
+  echo "  $0 -t <host> -f <host> [-r] [-o] [-c] [-d <folder>] [-s] [-h] [--] <args>"
+  echo ""
+  echo "Available flags:"
+  echo "  -t, --to             Sync to <host>"
+  echo "  -f, --from           Sync from <host>"
+  echo "  -r, --root           1:1 copy of 'bin/' and 'par/', will delete non-matching files"
+  echo "  -o, --output         Sync contents of 'simulations/*/output-*' using 'include.txt' as default filters"
+  echo "  -c, --checkpoints    Sync 'simulations/*/checkpoints'"
+  echo "  -s, --simulations    1:1 copy of 'simulations/*', will delete non-matching files"
+  echo "  -d, --directory      Replace 'simulations/*' with 'simulations/<folder>', can include wildcards"
+  echo "  -h, --help           Prints this help dialog"
+  echo "  --                   Everything after this separator will overwrite the contents in 'include.txt'"
+  echo ""
+
+  exit 0
+}
+
+# define CLI variables
+to=""
+from=""
+sync_root=false
+sync_output=false
+sync_checkpoints=false
+directory=""
+sync_simulations=false
+
+# parse command-line options
+if [[ $# -eq 0 ]]; then
+  usage
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      ;;
+    -t|--to)
+      to=$2
+      shift 2
+      ;;
+    -f|--from)
+      from=$2
+      shift 2
+      ;;
+    -r|--root)
+      sync_root=true
+      shift 1
+      ;;
+    -o|--output)
+      sync_output=true
+      shift 1
+      ;;
+    -c|--checkpoints)
+      sync_checkpoints=true
+      shift 1
+      ;;
+    -s|--simulations)
+      sync_simulations=true
+      shift 1
+      ;;
+    -d|--directory)
+      directory=$2
+      shift 2
+      ;;
+    --)
+      shift 1
+      break
+      ;;
+    *)
+      echo "Unknown option: '$1', use -h, --help for more information"
+      exit 1
+      ;;
+  esac
+done
+
+# remaining text should be include statements to pass to rsync
+includes=("$@")
+
+# exit if there is some error in parsing the arguments
+if [ $? -ne 0 ]; then
+  echo "An unknown error took place while parsing the arguments"
+  exit 1
+fi
+
+# if flags to rsync are provided by the user, store them in a temporary file
+include_is_tmp=false
+include_file="$(dirname $(realpath $0))/include.txt"
+if [ ${#includes[@]} -ne 0 ]; then
+  include_file=$(mktemp)
+  printf "%s\n" "${includes[@]}" > "$include_file"
+  include_is_tmp=true
+fi
+
+# only one must be provided
+if [ -n "$to" ] && [ -n "$from" ]; then
+  echo "Supply either -t, --to or -f, --from but not both"
+  exit 1
+fi
+
+# sort source and destination
+if [ -n "$to" ]; then
+  src="."
+  dest=$(jq -r --arg k "$to" '.[$k]' $(dirname $(realpath $0))/hosts.json)
+
+  if [ "$dest" == "null" ]; then
+    echo "Error, unknown host"
+    exit 1
+  fi
+
+  dest=$to:$dest
+
+elif [ -n "$from" ]; then
+  dest="."
+  src=$(jq -r --arg k "$from" '.[$k]' $(dirname $(realpath $0))/hosts.json)
+
+  if [ "$src" == "null" ]; then
+    echo "Error, unknown host"
+    exit 1
+  fi
+
+  src=$from:$src
+fi
+
+# run rsync commands
+if [ "$sync_root" == true ]; then
+  echo "Syncing the root directory"
+  rsync -rLptDh                                                                                \
+        --progress                                                                             \
+        --delete                                                                               \
+        --include='bin/' --include='bin/**' --include='par/' --include='par/**' --exclude='*'  \
+        "$src/" "$dest/"
+fi
+
+if [ "$sync_output" == true ]; then
+  echo "Selective sync of the output directories"
+  rsync -rLptDh                                                    \
+        --progress                                                 \
+        --include='*/' --include-from=$include_file --exclude='*'  \
+        "$src/simulations/$directory" "$dest/simulations/"
+fi
+
+if [ "$sync_checkpoints" == true ]; then
+  echo "Syncing the checkpoint directory"
+  rsync -rLptDh                                                                       \
+        --progress                                                                    \
+        --include='*/' --include='checkpoints/**' --exclude='output-*/' -exclude='*'  \
+        "$src/simulations/$directory" "$dest/simulations/"
+fi
+
+if [ "$sync_simulations" == true ]; then
+  rsync -rLptDh --progress --delete "$src/simulations/$directory" "$dest/simulations/"
+fi
+
+# remove temporary file if used
+if [ "$include_is_tmp" == true ]; then
+  rm $include_file
+fi
