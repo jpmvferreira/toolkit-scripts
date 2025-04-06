@@ -2,11 +2,10 @@
 
 # NOTES:
 # - "--bind-to none" on `mpirun` and "--cpu-bind=none" on `srun` ensure that threads don't bind to a specific core
+# - to use jpb dependencies in Slurm you have to set 'NaNChecker::action_if_found' to 'abort' for the toolkit to return a non-zero exit code if the simulation encounters a NaN
 
 # TODO:
-# - add -o, --output to specify output folder and keep the default to be 'simulations'
 # - add -c, --continue to copy the parfile of the last run of a given simulation and append to it based on the last checkpoint
-# - see how to submit several jobs in a dependency queue and add this functionality to this script
 
 # ensure that the exit signals will propagate through pipes
 set -o pipefail
@@ -19,17 +18,17 @@ usage() {
   echo "  $0 -e <executable> -p <parfile> [-o] [-O] [-a] [-s] [-S] [-t <1,2,..,all>] [-p <1,2,..,all>] [-h] -- <args for Slurm>"
   echo ""
   echo "Available flags:"
-  echo "  -e, --exe        <path>           Executable file (required)"
-  echo "  -p, --par        <path>           Parameter file (required)"
-  echo "  -o, --output                      Output folder (default: './simulations')"
-  echo "  -O, --overwrite                   Overwrite if output folder already exists"
-  echo "  -a, --append                      Append to already existing output, in its own folder"
-  echo "  -s, --sbatch                      Run using Slurm via sbatch"
-  echo "  -t, --threads    <1,2,..,[all]>   The Nº of threads (localhost only)"
-  echo "  -P, --processes  <[1],2,..,all>   The Nº of processes (localhost only)"
-  echo "  -m, --move                        Move the parfile instead of copying it to the output directory"
-  echo "  -h, --help                        Prints this help dialog"
-  echo "  --                                Everything after this separator will be dispatched verbatim to sbatch"
+  echo "  -e, --exe        <path>          Executable file (required)"
+  echo "  -p, --par        <path>          Parameter file (required)"
+  echo "  -o, --output     <path>          Output folder (default: './simulations')"
+  echo "  -O, --overwrite                  Overwrite if output folder already exists"
+  echo "  -a, --append                     Append to already existing simulation, specified in the parfile"
+  echo "  -s, --sbatch                     Run using Slurm via sbatch"
+  echo "  -t, --threads    <1,2,..,[all]>  The Nº of threads (localhost only)"
+  echo "  -P, --processes  <[1],2,..,all>  The Nº of processes (localhost only)"
+  echo "  -m, --move                       Move the parfile instead of copying it to the output directory"
+  echo "  -h, --help                       Prints this help dialog"
+  echo "  --                               Everything after this separator will be dispatched verbatim to sbatch"
   echo ""
   echo "Environmental variables:"
   echo "  \$CACTUS_SOURCE  If exists, it will be sourced before running the binary"
