@@ -2,10 +2,8 @@
 
 # NOTES:
 # - "--bind-to none" on `mpirun` and "--cpu-bind=none" on `srun` ensure that threads don't bind to a specific core
-# - to use jpb dependencies in Slurm you have to set 'NaNChecker::action_if_found' to 'abort' for the toolkit to return a non-zero exit code if the simulation encounters a NaN
-
-# TODO:
-# - add -c, --continue to copy the parfile of the last run of a given simulation and append to it based on the last checkpoint
+# - to use job dependencies in Slurm you have to set 'NaNChecker::action_if_found' to 'abort' for the toolkit to return a non-zero exit code if the simulation encounters a NaN
+# - having spaces in any of the folders name will break this script!
 
 # ensure that the exit signals will propagate through pipes
 set -o pipefail
@@ -15,12 +13,13 @@ usage() {
   echo "A CLI to automate and simplify the execution of Cactus binaries"
   echo ""
   echo "Usage:"
-  echo "  $0 -e <executable> -p <parfile> [-o] [-O] [-a] [-s] [-S] [-t <1,2,..,all>] [-p <1,2,..,all>] [-h] -- <args for Slurm>"
+  echo "  $0 -e <executable> -p <parfile> -c <path> -o <path> -O -a -s -S -t <1,2,..,all> -p <1,2,..,all> -h -- <args for Slurm>"
   echo ""
   echo "Available flags:"
   echo "  -e, --exe        <path>          Executable file (required)"
-  echo "  -p, --par        <path>          Parameter file (required)"
+  echo "  -p, --par        <path>          Parameter file"
   echo "  -o, --output     <path>          Output folder (default: './simulations')"
+  echo "  -c, --continue   <path>          Continue a simulation with the parfile from the previous run"
   echo "  -O, --overwrite                  Overwrite if output folder already exists"
   echo "  -a, --append                     Append to already existing simulation, specified in the parfile"
   echo "  -s, --sbatch                     Run using Slurm via sbatch"
@@ -38,6 +37,7 @@ usage() {
 exe=""
 par=""
 output="simulations"
+cont=""               # not using 'continue' as variable name since its a shell built-in
 overwrite=false
 append=false
 sbatch=false
@@ -67,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -o|--output)
       output=$(realpath $2)
+      shift 2
+      ;;
+    -c|--continue)
+      cont=$(realpath $2)
       shift 2
       ;;
     -O|--overwrite)
@@ -115,24 +119,32 @@ fi
 
 # the executable must always be provided
 if [[ -z $exe ]]; then
-  echo "Error on parsing arguments: executable file (-e, --exe) is required"
+  echo "Error: executable file (-e, --exe) is required"
   exit 1
 fi
 
 if [ ! -e $exe ]; then
-  echo "Error on parsing arguments: no executable file found at $exe"
+  echo "Error: no executable file found at $exe"
   exit 1
 fi
 
-# the parfile must always be provided
-if [[ -z $par ]]; then
-  echo "Error on parsing arguments: parameter file (-p, --par) is required"
+# either a parfile or '--continue' must be provided
+if [[ -n $par && -n $cont ]]; then
+  echo "Error: either --par or --continue must be provided, not both"
   exit 1
 fi
 
-if [ ! -e $par ]; then
-  echo "Error on parsing arguments: no parfile found at $par"
+# if parfile was provided, then it must exist
+if [[ -n $par && ! -e $par ]]; then
+  echo "Error: no parfile found at $par"
   exit 1
+fi
+
+# warn the user that '--continue' ignores '--output', '--append' and '--overwrite'
+if [[ -n $cont ]]; then
+  if [[ $output != "simulations" || $append == true || $overwrite == true ]]; then
+    echo "Warning: using --continue ignores --output, --append and --overwrite"
+  fi
 fi
 
 # threads and processes must be integers or "all"
@@ -162,58 +174,93 @@ if [[ "$processes" == "all" ]]; then
   processes=$(nproc)
 fi
 
-# fetch run name from parfile
-# this should be present in 'IO::out_dir' and will be assigned to `$name`
-name=$(grep 'IO::out_dir' $par | sed 's/.*= "\(.*\)".*/\1/')
-
-if [[ "$name" == *"$"* ]]; then
-  echo "'$' found in 'IO::out_dir', this is probably a variable and I don't know its value, I'm bailing out!"
-  exit 1
-fi
-
-# the run directory (that includes the simulation output and checkpoints) is "simulations/$name"
-rundir="$output/$name"
-
-# if the run directory exists and neither -o, --overwrite or -a, --append is set, refuse to proceed
-if [ -e "$rundir" ] && [ $overwrite == false ] && [ $append == false ]; then
-  echo "Run directory '$rundir' already exists and neither -O, --overwrite nor -a, --append have been provided"
-  exit 1
-fi
-
-# if run directory exists and `overwrite` is toggled, remove everything
-if [ $overwrite == true ] && [ -e "$rundir" ]; then
-  rm -rf "$rundir"
-fi
-
-# ensure run directory exists and cd into it
-mkdir -p "$rundir"
-mkdir -p "$rundir/checkpoints"
-cd "$rundir"
-
-# at this point we know the run directory exists and is empty, or exists but `append` is toggled
-# we need to create the output for the N-th run
-# (!) poor choice of variable name, there already was an output before!
-for i in {0000..9999}; do
-  output="output-$i"
-  if [ ! -d "$output" ]; then
-    mkdir "$output"
-    break
+# there's a branch here with two possible scenarios
+# either the user has provided '--continue' and we fetch the parfile from the latest run and append on top of that
+# or the user provided a parfile and we use it to create the new simulation
+# after that, execution is the same for both cases
+if [[ -n $cont ]]; then
+  # check if the folder exists
+  if [[ ! -d $cont ]]; then
+    echo "Error: $cont doesn't exist or exists but is not a folder"
+    exit 1
   fi
-done
 
-# cd into the output folder because we're running the parfile from inside the output directory
-# this is to avoid dangling parfiles in `$rundir`
-cd "$output"
+  cd $cont
+  name=$(basename $(pwd))
 
-# copy or move the parfile to `$output`, which is where we are
-if [ $move == true ]; then
-  mv "$par" .
+  # check what's the new output-XXXX folder
+  for i in {0000..9999}; do
+    outputdir="output-$i"
+    if [ ! -d "$outputdir" ]; then
+      mkdir "$outputdir"
+      break
+    fi
+  done
+
+  # copy the parfile from output-XXXX minus 1 to output-XXXX
+  i_prev=$(printf "%04d" $((10#$i - 1)))
+  outputdir_prev="output-$i_prev"
+  cp $outputdir_prev/*.par $outputdir
+
+  # find out what's the name of the parfile
+  # assuming there's only one parfile per folder
+  par=$(find $outputdir -iname '*.par' -print -quit)
+
+  # cd into to output folder
+  cd $outputdir
+
+# deal with the case where the user provided a parfile
 else
-  cp "$par" .
-fi
+  # fetch run name from parfile
+  # this should be present in 'IO::out_dir' and will be assigned to `$name`
+  name=$(grep 'IO::out_dir' $par | sed 's/.*= "\(.*\)".*/\1/')
 
-# change 'IO::out_dir' to `.`, and assume 'IO::checkpoint_dir' and 'IO::recover_dir' are set to '../checkpoints' already
-sed -i "s|^IO::out_dir.*|IO::out_dir = \".\"|" $(basename "$par")
+  if [[ "$name" == *"$"* ]]; then
+    echo "'$' found in 'IO::out_dir', this is probably a variable and I don't know its value, I'm bailing out!"
+    exit 1
+  fi
+
+  # the run directory (that includes the simulation output and checkpoints) is "simulations/$name"
+  rundir="$output/$name"
+
+  # if the run directory exists and neither -o, --overwrite or -a, --append is set, refuse to proceed
+  if [ -e "$rundir" ] && [ $overwrite == false ] && [ $append == false ]; then
+    echo "Run directory '$rundir' already exists and neither -O, --overwrite nor -a, --append have been provided"
+    exit 1
+  fi
+
+  # if run directory exists and `overwrite` is toggled, remove everything
+  if [ $overwrite == true ] && [ -e "$rundir" ]; then
+    rm -rf "$rundir"
+  fi
+
+  # ensure run directory exists and cd into it
+  mkdir -p "$rundir"
+  mkdir -p "$rundir/checkpoints"
+  cd "$rundir"
+
+  # at this point we know the run directory exists and is empty, or exists but `append` is toggled
+  # we need to create the output for the N-th run
+  for i in {0000..9999}; do
+    outputdir="output-$i"
+    if [ ! -d "$outputdir" ]; then
+      mkdir "$outputdir"
+      break
+    fi
+  done
+
+  # cd into $outputdir and move/copy the parfile here
+  cd "$outputdir"
+
+  if [ $move == true ]; then
+    mv "$par" .
+  else
+    cp "$par" .
+  fi
+
+  # change 'IO::out_dir' to `.`, and assume 'IO::checkpoint_dir' and 'IO::recover_dir' are set to '../checkpoints' already
+  sed -i "s|^IO::out_dir.*|IO::out_dir = \".\"|" $(basename "$par")
+fi
 
 # if we're using sbatch
 if [ "$sbatch" == true ]; then
