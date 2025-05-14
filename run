@@ -5,6 +5,9 @@
 # - to use job dependencies in Slurm you have to set 'NaNChecker::action_if_found' to 'abort' for the toolkit to return a non-zero exit code if the simulation encounters a NaN
 # - having spaces in any of the folders name will break this script!
 
+# TODO:
+# - is there a way for me to remove old checkpoints after the new one has been written to the disk?
+
 # ensure that the exit signals will propagate through pipes
 set -o pipefail
 

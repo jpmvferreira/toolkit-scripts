@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 
+# TODO:
+# - include more than one source directory
+
 # function to display usage information
 usage() {
   echo "An rsync wrapper to manage Einstein Toolkit simulations"
   echo ""
   echo "Usage"
-  echo "  $0 -t <host> -f <host> [-r] [-o] [-c] [-d <folder>] [-s] [-h] [--] <args>"
+  echo "  $0 -t <host> -f <host> [-a] [-r] [-o] [-c] [-s] [-d <folder>] [-h] [--] <args>"
   echo ""
   echo "Available flags:"
   echo "  -t, --to             Sync to <host>"
   echo "  -f, --from           Sync from <host>"
+  echo "  -a, --all            1:1 copy of the entire folder, will delete non-matching files"
   echo "  -r, --root           1:1 copy of 'bin/' and 'par/', will delete non-matching files"
   echo "  -o, --output         Sync contents of 'simulations/*/output-*' using 'include.txt' as default filters"
   echo "  -c, --checkpoints    Sync 'simulations/*/checkpoints'"
   echo "  -s, --simulations    1:1 copy of 'simulations/*', will delete non-matching files"
-  echo "  -d, --directory      Replace 'simulations/*' with 'simulations/<folder>', can include wildcards"
+  echo "  -d, --directory      Specify 'simulations/<directory>', use with '-s', can include wildcards"
   echo "  -h, --help           Prints this help dialog"
   echo "  --                   Everything after this separator will overwrite the contents in 'include.txt'"
   echo ""
@@ -25,11 +29,12 @@ usage() {
 # define CLI variables
 to=""
 from=""
+sync_all=false
 sync_root=false
 sync_output=false
 sync_checkpoints=false
-directory=""
 sync_simulations=false
+directory=""
 
 # parse command-line options
 if [[ $# -eq 0 ]]; then
@@ -38,9 +43,6 @@ fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help)
-      usage
-      ;;
     -t|--to)
       to=$2
       shift 2
@@ -48,6 +50,10 @@ while [[ $# -gt 0 ]]; do
     -f|--from)
       from=$2
       shift 2
+      ;;
+    -a|--all)
+      sync_all=true
+      shift 1
       ;;
     -r|--root)
       sync_root=true
@@ -68,6 +74,9 @@ while [[ $# -gt 0 ]]; do
     -d|--directory)
       directory=$2
       shift 2
+      ;;
+    -h|--help)
+      usage
       ;;
     --)
       shift 1
@@ -129,8 +138,17 @@ elif [ -n "$from" ]; then
 fi
 
 # run rsync commands
+if [ "$sync_all" == true ]; then
+  echo "Syncing the project directory"
+
+  rsync -rLptDh                                                                                \
+        --progress                                                                             \
+        --delete                                                                               \
+        "$src/" "$dest/"
+fi
+
 if [ "$sync_root" == true ]; then
-  echo "Syncing the root directory"
+  echo "Syncing 'bin/' and 'par/' from the root directory"
   rsync -rLptDh                                                                                \
         --progress                                                                             \
         --delete                                                                               \
@@ -147,7 +165,7 @@ if [ "$sync_output" == true ]; then
 fi
 
 if [ "$sync_checkpoints" == true ]; then
-  echo "Syncing the checkpoint directory"
+  echo "Selective sync of the checkpoint directory"
   rsync -rLptDh                                                                       \
         --progress                                                                    \
         --include='*/' --include='checkpoints/**' --exclude='output-*/' -exclude='*'  \
@@ -155,6 +173,7 @@ if [ "$sync_checkpoints" == true ]; then
 fi
 
 if [ "$sync_simulations" == true ]; then
+  echo "Synching the whole 'simulations/' folder"
   rsync -rLptDh --progress --delete "$src/simulations/$directory" "$dest/simulations/"
 fi
 
