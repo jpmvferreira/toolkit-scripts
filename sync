@@ -158,9 +158,9 @@ fi
 
 if [ "$sync_output" == true ]; then
   echo "Selective sync of the output directories"
-  rsync -rLptDh                                                    \
-        --progress                                                 \
-        --include='*/' --include-from=$include_file --exclude='*'  \
+  rsync -rLptDh                                                                               \
+        --progress                                                                            \
+        --include='*/' --exclude='checkpoints/**' --include-from=$include_file --exclude='*'  \
         "$src/simulations/$directory" "$dest/simulations/"
 fi
 
