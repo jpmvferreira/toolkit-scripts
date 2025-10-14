@@ -267,6 +267,15 @@ fi
 
 # if we're using sbatch
 if [ "$sbatch" == true ]; then
+  # '--cpu-bind' was '--cpu_bind' a few versions ago
+  # adding this for bakcwards compatability
+  cpubind="cpu-bind"
+  versionref="17.02.11"
+  version=$(sbatch -V | cut -d "" -f 2)
+  if [[ "$(echo -e "$version\n$versionref" | sort -V | head -n 1)" == "$versionref" ]]; then
+    cpubind="cpu_bind"
+  fi
+
   sbatch --job-name="$name" -o "out.log" $flags <<EOF
 #!/usr/bin/env bash
 
@@ -285,7 +294,7 @@ export CACTUS_STARTTIME=\$(date +%s)
 export CACTUS_NUM_PROCS=\$SLURM_NTASKS
 export OMP_NUM_THREADS=\$SLURM_CPUS_PER_TASK
 
-srun --cpu-bind=none -- "$exe" $(basename "$par")
+srun --"$cpubind"=none -- "$exe" $(basename "$par")
 EOF
 
 # otherwise, we're using localhost
