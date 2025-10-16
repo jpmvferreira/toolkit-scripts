@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
 
-# TODO:
-# - include more than one source directory
-
 # function to display usage information
 usage() {
-  echo "An rsync wrapper to manage Einstein Toolkit simulations"
+  echo "An rsync wrapper to sync simulations and source code between machines"
   echo ""
   echo "Usage"
-  echo "  $0 -t <host> -f <host> [-a] [-r] [-o] [-c] [-s] [-d <folder>] [-h] [--] <args>"
+  echo "  $0 {-t,-f} <host> [-a] [-r] [-o] [-c] [-s] [-d <folder>] [-h] [-- <args>]"
   echo ""
   echo "Available flags:"
   echo "  -t, --to             Sync to <host>"
   echo "  -f, --from           Sync from <host>"
-  echo "  -a, --all            1:1 copy of the entire folder, will delete non-matching files"
-  echo "  -r, --root           1:1 copy of 'bin/' and 'par/', will delete non-matching files"
-  echo "  -o, --output         Sync contents of 'simulations/*/output-*' using 'include.txt' as default filters"
-  echo "  -c, --checkpoints    Sync 'simulations/*/checkpoints'"
-  echo "  -s, --simulations    1:1 copy of 'simulations/*', will delete non-matching files"
-  echo "  -d, --directory      Specify 'simulations/<directory>', use with '-s', can include wildcards"
+  echo "  -o, --output         Sync contents of 'simulations/*/output-*'"
+  echo "  -c, --checkpoints    Sync contents of 'simulations/*/checkpoints'"
+  echo "  -p, --project        Sync contents of 'bin/' and 'par/'"
+  echo "  -i, --installation   Sync everything except 'configs/' and 'exe/'"
+  echo "  -d, --directory      Only sync directories that match the query in -o, -c. Wildcards are supported"
   echo "  -h, --help           Prints this help dialog"
-  echo "  --                   Everything after this separator will overwrite the contents in 'include.txt'"
+  echo "  --                   Everything after this separator will be used as include queries to rsync"
   echo ""
 
   exit 0
@@ -29,11 +25,10 @@ usage() {
 # define CLI variables
 to=""
 from=""
-sync_all=false
-sync_root=false
 sync_output=false
 sync_checkpoints=false
-sync_simulations=false
+sync_project=false
+sync_installation=false
 directory=""
 
 # parse command-line options
@@ -51,14 +46,6 @@ while [[ $# -gt 0 ]]; do
       from=$2
       shift 2
       ;;
-    -a|--all)
-      sync_all=true
-      shift 1
-      ;;
-    -r|--root)
-      sync_root=true
-      shift 1
-      ;;
     -o|--output)
       sync_output=true
       shift 1
@@ -67,8 +54,12 @@ while [[ $# -gt 0 ]]; do
       sync_checkpoints=true
       shift 1
       ;;
-    -s|--simulations)
-      sync_simulations=true
+    -p|--project)
+      sync_project=true
+      shift 1
+      ;;
+    -i|--installation)
+      sync_installation=true
       shift 1
       ;;
     -d|--directory)
@@ -98,22 +89,20 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# if flags to rsync are provided by the user, store them in a temporary file
-include_is_tmp=false
-include_file="$(dirname $(realpath $0))/include.txt"
+# if the user provides flags to rsync, store them in a temporary file
+include_file=$(mktemp)
+echo "*" > $include_file
 if [ ${#includes[@]} -ne 0 ]; then
-  include_file=$(mktemp)
   printf "%s\n" "${includes[@]}" > "$include_file"
-  include_is_tmp=true
 fi
 
-# only one must be provided
+# argument check: only '-t' or '-f' must be provided
 if [ -n "$to" ] && [ -n "$from" ]; then
   echo "Supply either -t, --to or -f, --from but not both"
   exit 1
 fi
 
-# sort source and destination
+# fetch source and destination folders
 if [ -n "$to" ]; then
   src="."
   dest=$(jq -r --arg k "$to" '.[$k]' $(dirname $(realpath $0))/hosts.json)
@@ -138,46 +127,47 @@ elif [ -n "$from" ]; then
 fi
 
 # run rsync commands
-if [ "$sync_all" == true ]; then
-  echo "Syncing the project directory"
-
-  rsync -rLptDh                                                                                \
-        --progress                                                                             \
-        --delete                                                                               \
-        "$src/" "$dest/"
-fi
-
-if [ "$sync_root" == true ]; then
-  echo "Syncing 'bin/' and 'par/' from the root directory"
-  rsync -rLptDh                                                                                \
-        --progress                                                                             \
-        --delete                                                                               \
-        --include='bin/' --include='bin/**' --include='par/' --include='par/**' --exclude='*'  \
-        "$src/" "$dest/"
-fi
-
 if [ "$sync_output" == true ]; then
-  echo "Selective sync of the output directories"
-  rsync -rLptDh                                                                               \
-        --progress                                                                            \
-        --include='*/' --exclude='checkpoints/**' --include-from=$include_file --exclude='*'  \
-        "$src/simulations/$directory" "$dest/simulations/"
+  echo "[*] Sync the output directories"
+  rsync                                                                                   \
+    -rLptDh                                                                               \
+    --progress                                                                            \
+    --include='*/' --exclude='checkpoints/**' --include-from=$include_file --exclude='*'  \
+    "$src/simulations/$directory" "$dest/simulations/"
+  echo ""
 fi
 
 if [ "$sync_checkpoints" == true ]; then
-  echo "Selective sync of the checkpoint directory"
-  rsync -rLptDh                                                                       \
-        --progress                                                                    \
-        --include='*/' --include='checkpoints/**' --exclude='output-*/' -exclude='*'  \
-        "$src/simulations/$directory" "$dest/simulations/"
+  echo "[*] Sync the checkpoint directories"
+  rsync                                     \
+    -rLptDh                                 \
+    --progress                              \
+    --include='*/' --exclude='output-*/**'  \
+    "$src/simulations/$directory" "$dest/simulations/"
+  echo ""
 fi
 
-if [ "$sync_simulations" == true ]; then
-  echo "Synching the whole 'simulations/' folder"
-  rsync -rLptDh --progress --delete "$src/simulations/$directory" "$dest/simulations/"
+if [ "$sync_project" == true ]; then
+  echo "[*] Sync 'par/' and 'bin/'"
+  rsync                                                                                    \
+    -rLptDh                                                                                \
+    --progress                                                                             \
+    --delete                                                                               \
+    --include='bin/' --include='bin/**' --include='par/' --include='par/**' --exclude='*'  \
+    "$src/" "$dest/"
+  echo ""
 fi
 
-# remove temporary file if used
-if [ "$include_is_tmp" == true ]; then
-  rm $include_file
+if [ "$sync_installation" == true ]; then
+  echo "[*] Sync everything except 'configs/' and 'exe/'"
+  rsync                                                      \
+    -rlptDh                                                  \
+    --progress                                               \
+    --delete                                                 \
+    --exclude='exe/' --exclude='configs/' --exclude='TEST/'  \
+    "$src/" "$dest/"
+  echo ""
 fi
+
+# remove temporary
+rm $include_file

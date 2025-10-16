@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+
+
+# ensure that the exit signals will propagate through pipes
+# required because 'tee' changes non-zero exit signals to zero if used in a pipe
+set -o pipefail
+
+# sidenote: why am I using 'echo "yes\n"' instead of the command 'yes' below
+# this is because command 'yes' prints something forever until it is killed
+# upon a write error, 'yes' exits with status ‘1’, which would propagate through the pipe due to 'set -o pipefail'
+# this would mask a successful execution of the config because of the previous 'set -o pipefail'
+
+
+# function to display usage information
+usage() {
+  echo "A script to automate Cactus' build process"
+  echo ""
+  echo "Usage"
+  echo "  $0 -c <config> [-o <options>] [-t <thornlist>] [-s] [--salloc]"
+  echo ""
+  echo "Available flags:"
+  echo "  -c, --config     Configuration name (required)"
+  echo "  -o, --options    Options file (*.cfg)"
+  echo "  -t, --thornlist  Thornlist file (*.th)"
+  echo "  -s, --slurm      Build the binary using Slurm"
+  echo "  -S, --salloc     Buils the binary using Slurm salloc"
+  echo "  -h, --help       Prints this help dialog"
+  echo "  --               Everything after this separator will be provided verbatim to salloc/sbatch"
+  echo ""
+  echo "Environmental variables:"
+  echo "  \$CACTUS_SOURCE  If exists, it will be sourced before the build process"
+}
+
+# define CLI variables
+config=""
+options=""
+thornlist=""
+
+# parse command-line options
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -c|--config)
+      config=$2
+      shift 2
+      ;;
+    -o|--options)
+      options=$2
+      shift 2
+      ;;
+    -t|--thornlist)
+      thornlist=$2
+      shift 2
+      ;;
+    -s|--slurm)
+      slurm=true
+      shift 1
+      ;;
+    -S|--salloc)
+      salloc=true
+      shift 1
+      ;;
+    --)
+      shift 1
+      break
+      ;;
+    *)
+      echo "Unknown option: '$1', use -h, --help for more information"
+      exit 1
+      ;;
+  esac
+done
+
+# remaining arguments to be passed verbatim to salloc/sbatch
+flags="$@"
+
+# exit if there is some error in parsing the arguments
+if [ $? -ne 0 ]; then
+  echo "An unknown error took place while parsing the arguments"
+  exit 1
+fi
+
+# the config name must always be provided
+if [[ -z $config ]]; then
+  echo "Error: configuration name (-c, --config) is required"
+  exit 1
+fi
+
+
+# check whether there's something to source before we proceed
+if [ -n "${CACTUS_SOURCE}" ] && [ -f $CACTUS_SOURCE ]; then
+  echo "*** Sourcing \$CACTUS_SOURCE ***"
+  echo ""
+
+  source $CACTUS_SOURCE
+
+  # exit if the sourcing is unsuccessful
+  if [ $? -ne 0 ]; then
+    echo "An unknown error occured while sourcing $CACTUS_SOURCE"
+    exit 1
+  fi
+fi
+
+
+# ensure that configs/ and exe/ exist
+mkdir -p exe
+mkdir -p configs
+
+# make the configuration in localhost if both the thornlist and the option files are provided
+if [ -n "$options" ] && [ -n "$thornlist" ]; then
+  echo "*** Bulding configuration ***"
+  echo ""
+
+  # build the configuration without asking for user input
+  echo "yes\n" | make $config-config options=$options THORNLIST=$thornlist |& tee configs/$config.log
+
+  # if something goes wrong, exit
+  if [ $? -ne 0 ]; then
+    exit 1
+  fi
+fi
+
+# make the binary using Slurm or in localhost
+if [ "$slurm" == true ]; then
+  echo "*** Using Slurm to build the binary ***"
+  echo ""
+
+  sbatch $flags -o exe/cactus_$config.log --wrap "echo 'no' | make -j $config"
+
+elif [ "$salloc" == true ]; then
+  echo "*** Using Slurm salloc's to build the binary ***"
+  echo ""
+
+  echo "no\n" | salloc $flags make -j $(nproc) $config |& tee exe/cactus_$config.log
+
+else
+  echo "*** Building the binary locally ***"
+  echo ""
+
+  echo "no\n" | make -j $(nproc) $config |& tee exe/cactus_$config.log
+
+fi
+
+# exit if the making of the binary gave an error
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+# othwerwise return 0
+exit 0
