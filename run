@@ -273,7 +273,16 @@ fi
 
 # if we're using sbatch
 if [ "$sbatch" == true ]; then
-  run_cmd="srun --cpu-bind=none"
+  # '--cpu-bind' was '--cpu_bind' a few versions ago
+  # adding this for bakcwards compatability
+  cpubind="cpu-bind"
+  versionref="17.02.11"
+  version=$(sbatch -V | cut -d "" -f 2)
+  if [[ "$(echo -e "$version\n$versionref" | sort -V | head -n 1)" == "$versionref" ]]; then
+    cpubind="cpu_bind"
+  fi
+
+  run_cmd="srun --"$cpubind"=none"
   if [ "$mpirun" == true ]; then
     run_cmd="mpirun -np \$SLURM_NTASKS --bind-to none"
   fi
