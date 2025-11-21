@@ -26,6 +26,7 @@ usage() {
   echo "  -O, --overwrite                  Overwrite if output folder already exists"
   echo "  -a, --append                     Append to already existing simulation, specified in the parfile"
   echo "  -s, --sbatch                     Run using Slurm via sbatch"
+  echo "      --mpirun                     Use mpirun instead of srun when using sbatch"
   echo "  -t, --threads    <1,2,..,[all]>  The Nº of threads (localhost only)"
   echo "  -P, --processes  <[1],2,..,all>  The Nº of processes (localhost only)"
   echo "  -m, --move                       Move the parfile instead of copying it to the output directory"
@@ -44,6 +45,7 @@ cont=""               # not using 'continue' as variable name since its a shell 
 overwrite=false
 append=false
 sbatch=false
+mpirun=false
 threads="all"
 processes=1
 move=false
@@ -86,6 +88,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -s|--sbatch)
       sbatch=true
+      shift 1
+      ;;
+       --mpirun)
+      mpirun=true
       shift 1
       ;;
     -t|--threads)
@@ -267,13 +273,9 @@ fi
 
 # if we're using sbatch
 if [ "$sbatch" == true ]; then
-  # '--cpu-bind' was '--cpu_bind' a few versions ago
-  # adding this for bakcwards compatability
-  cpubind="cpu-bind"
-  versionref="17.02.11"
-  version=$(sbatch -V | cut -d "" -f 2)
-  if [[ "$(echo -e "$version\n$versionref" | sort -V | head -n 1)" == "$versionref" ]]; then
-    cpubind="cpu_bind"
+  run_cmd="srun --cpu-bind=none"
+  if [ "$mpirun" == true ]; then
+    run_cmd="mpirun -np \$SLURM_NTASKS --bind-to none"
   fi
 
   sbatch --job-name="$name" -o "out.log" $flags <<EOF
@@ -294,7 +296,7 @@ export CACTUS_STARTTIME=\$(date +%s)
 export CACTUS_NUM_PROCS=\$SLURM_NTASKS
 export OMP_NUM_THREADS=\$SLURM_CPUS_PER_TASK
 
-srun --"$cpubind"=none -- "$exe" $(basename "$par")
+$run_cmd -- "$exe" $(basename "$par")
 EOF
 
 # otherwise, we're using localhost
