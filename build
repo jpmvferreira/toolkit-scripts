@@ -79,6 +79,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# get absolute path for thornlist and option files
+if [ -n "$options" ] && [ -n "$thornlist" ]; then
+  thornlist=$(realpath $thornlist)
+  options=$(realpath $options)
+fi
+
 # remaining arguments to be passed verbatim to salloc/sbatch
 flags="$@"
 
@@ -109,6 +115,9 @@ if [ -n "${CACTUS_SOURCE}" ] && [ -f $CACTUS_SOURCE ]; then
   fi
 fi
 
+# cd to the cactus root repository
+# I'm assuming that the binary is in cactus/bin/build
+cd "$(dirname "${BASH_SOURCE[0]}")"/..
 
 # ensure that configs/ and exe/ exist
 mkdir -p exe
